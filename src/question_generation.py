@@ -3,7 +3,7 @@ import json
 import re
 from tqdm import tqdm
 
-from LLM import complete_text_openai
+from src.LLM import complete_text_openai
 
 MODEL = "gpt-4o"
 
@@ -15,7 +15,7 @@ def strip_html_tags(text: str) -> str:
     return re.sub(clean, '', text)
 
 def count_lines(filename):
-    with open(filename, "r") as f:
+    with open(filename, "r", encoding="utf-8") as f:
         return sum(1 for _ in f)
 
 def extract_json(response):
@@ -29,162 +29,196 @@ def extract_json(response):
 def safe_load_json(response):
     output = extract_json(response)
     if not output:
-        return []
+        return {}
     try:
-        distractors = json.loads(output)
+        data = json.loads(output)
     except Exception as e:
         print(e)
-        print("Error parsing distractors from scratch:", output)
-        distractors = []
-    return distractors
+        print("Error parsing JSON from response:", output)
+        data = {}
+    return data
 
-
-def generate_distractors_from_scratch(formatted_question: str, formatted_answer: str):
+def validate_mcq_schema(mcq: dict, include_citation: bool = True) -> bool:
     """
-    Generate five plausible distractors (incorrect answer options) for a multiple-choice question,
-    without any additional context. The distractors should imitate the length and style of the correct answer.
+    Check that the mcq dictionary contains all the required keys.
+    
+    Expected keys are:
+      "Question", "A", "B", "C", "D", "Correct Answer", and "Explanation"
+    """
+    required_keys = ["Question", "A", "B", "C", "D", "Correct Answer", "Explanation"]
+    if include_citation:
+        required_keys.append("Citation")
+    if not isinstance(mcq, dict):
+        return False
+    return all(key in mcq for key in required_keys)
+
+def generate_mcq(formatted_question: str, formatted_answer: str, rulebook_text: str = None, full_content: list = None, max_retry: int = 5):
+    """
+    Generate a complete multiple-choice question with optional context.
+    
+    Parameters:
+      - formatted_question: The base question.
+      - formatted_answer: The correct answer.
+      - rulebook_text: (Optional) Additional context from the rulebook.
+      - full_content: (Optional) Forum discussion posts (list of dicts with a "content" key).
+      - max_retry: Maximum number of retries if the generated JSON does not match the schema.
+      
+    The expected output JSON format is:
+    
+    {
+      "Question": "<multiple-choice question text>",
+      "A": "<option A>",
+      "B": "<option B>",
+      "C": "<option C>",
+      "D": "<option D>",
+      "Correct Answer": "<the correct option letter>",
+      "Explanation": "<detailed explanation>",
+      "Citation": "<reference to the rulebook section or forum discussion>"
+    }
+    
+    Example:
+    {
+      "Question": "In the board game Troyes, ...?",
+      "A": "Yes – if you have the available actions, ...",
+      "B": "Yes – you can place two meeples on the same card, ...",
+      "C": "No – the rules allow only one meeple per activity card per round, ...",
+      "D": "No – you can only place a meeple on an activity card if no other meeple has been placed...",
+      "Correct Answer": "C",
+      "Explanation": "In Troyes, each activity card can only host one meeple per round..."
+    }
+    
     """
     prompt = (
-        "You are provided with a boardgame rules question and its correct answer.\n\n"
-        f"Question:\n{formatted_question}\n\n"
+        "Can you make this question into a multiple-choice question? We are building a benchmark for LLM on boardgames rules question answering so want some hard question.\n\n"
+        f"Question:\nThis question is about the rules of a boardgame called Pax Renaissance (2nd Edition). {formatted_question}\n\n"
         f"Answer:\n{formatted_answer}\n\n"
-        "Task: Generate five plausible distractors (incorrect answer options) for a multiple-choice question. "
-        "The distractors should imitate "
-        "the length and style of the correct answer.\n\n"
-        "Output the distractors as a JSON list, for example:\n"
-        '["Distractor 1", "Distractor 2", "Distractor 3", "Distractor 4", "Distractor 5"]\n'
-	"No additional text outside of the JSON."
     )
     
-    output = complete_text_openai(prompt, model=MODEL)
-    distractors = safe_load_json(output) 
-    return distractors
+    prompt_file = "data/prompt"
+    if rulebook_text:
+        prompt += f"Please come up with distractors based on the provided rulebook below:\n{rulebook_text}\n\n"
+        prompt_file += "_rulebook"
+        
+    if full_content and len(full_content) >= 3:
+        forum_posts = []
+        for post in full_content:
+            content = post.get("content", "")
+            cleaned = strip_html_tags(content)
+            a_post = f"username: {post['username']}\tpost_date: {post['post_date']}\ncontent: {cleaned}"
+            forum_posts.append(a_post)
+        forum_text = "\n\n".join(forum_posts)
+        prompt += f"Please come up with distractors based on the BGG forum discussion below:\n{forum_text}\n\n"
+        prompt_file += "_forum"
 
-def generate_distractors_from_rulebook(formatted_question: str, formatted_answer: str, rulebook_text: str):
-    """
-    Generate five plausible distractors (incorrect answer options) for a multiple-choice question that are
-    grounded in the provided rulebook text. The distractors should imitate the length and style of the correct answer.
-    """
-    prompt = (
-        "You are provided with a boardgame rules question, its correct answer, and the rulebook text.\n\n"
-        f"Question:\n{formatted_question}\n\n"
-        f"Answer:\n{formatted_answer}\n\n"
-        f"Rulebook Text:\n{rulebook_text}\n\n"
-        "Task: Generate five plausible distractors (incorrect answer options) for a multiple-choice question that are "
-        "grounded in the rulebook text. The distractors should imitate the length and style of the correct answer.\n\n"
-        "Output the distractors as a JSON list, for example:\n"
-        '["Distractor 1", "Distractor 2", "Distractor 3", "Distractor 4", "Distractor 5"]\n'
-	"No additional text outside of the JSON."
-    )
+    include_citation = rulebook_text or full_content
+   
+    if include_citation:
+        prompt += (
+            "Output the result as a JSON dictionary with the following keys: \"Question\", \"A\", \"B\", \"C\", \"D\", \"Correct Answer\", \"Explanation\", and \"Citation\".\n"
+            "The 'Citation' field should provide a reference to the rulebook section or the forum discussion, depending on the source used.\n"
+            "For example:\n"
+            "{\n"
+            '  "Question": "In the board game Troyes, ...?",\n'
+            '  "A": "Yes – if you have the available actions, ...",\n'
+            '  "B": "Yes – you can place two meeples on the same card, ...",\n'
+            '  "C": "No – the rules allow only one meeple per activity card per round, ...",\n'
+            '  "D": "No – you can only place a meeple on an activity card if no other meeple has been placed...",\n'
+            '  "Correct Answer": "C",\n'
+            '  "Explanation": "In Troyes, each activity card can only host one meeple per round...",\n'
+            '  "Citation": "Rulebook, Section 3.2: Worker Placement; username and post date for forum discussion"\n'
+            "}\n\n"
+            "Do not include any additional text."
+        )
+    else:
+        prompt += (
+            "Output the result as a JSON dictionary with the following keys: \"Question\", \"A\", \"B\", \"C\", \"D\", "
+            "\"Correct Answer\", and \"Explanation\".\n"
+            "For example:\n"
+            "{\n"
+            '  "Question": "In the board game Troyes, ...?",\n'
+            '  "A": "Yes – if you have the available actions, ...",\n'
+            '  "B": "Yes – you can place two meeples on the same card, ...",\n'
+            '  "C": "No – the rules allow only one meeple per activity card per round, ...",\n'
+            '  "D": "No – you can only place a meeple on an activity card if no other meeple has been placed...",\n'
+            '  "Correct Answer": "C",\n'
+            '  "Explanation": "In Troyes, each activity card can only host one meeple per round..."\n'
+            "}\n\n"
+            "Do not include any additional text."
+        )
     
-    output = complete_text_openai(prompt, model=MODEL)
-    distractors = safe_load_json(output)    
-    return distractors
 
-def generate_distractors_from_forum(formatted_question: str, formatted_answer: str, full_content: list):
-    """
-    Generate five plausible distractors (incorrect answer options) for a multiple-choice question that are
-    grounded in the online forum discussion. The discussion is provided in the full_content field, where each
-    item is a post. HTML tags in the post content will be removed before generating distractors.
-    This function is only called if there are at least three posts in the discussion.
-    The distractors should imitate the length and style of the correct answer.
-    """
-    # Concatenate cleaned forum posts into one discussion text.
-    forum_posts = []
-    for post in full_content:
-        content = post.get("content", "")
-        cleaned_content = strip_html_tags(content)
-        forum_posts.append(cleaned_content)
-    forum_text = "\n".join(forum_posts)
+    prompt_file += ".txt"
+    if not os.path.exists(prompt_file):
+        with open(prompt_file, 'w') as f:
+            f.write(prompt)
     
-    prompt = (
-        "You are provided with a boardgame rules question, its correct answer, and an online forum discussion "
-        "related to the question."
-        f"Question:\n{formatted_question}\n\n"
-        f"Answer:\n{formatted_answer}\n\n"
-        f"Forum Discussion:\n{forum_text}\n\n"
-        "Task: Generate five plausible distractors (incorrect answer options) for a multiple-choice question based on the "
-        "discussion content. The distractors should imitate the length and style of the correct answer.\n\n"
-        "Output the distractors as a JSON list, for example:\n"
-        '["Distractor 1", "Distractor 2", "Distractor 3", "Distractor 4", "Distractor 5"]\n'
-	"No additional text outside of the JSON."
-    )
+    retries = 0
+    while retries < max_retry:
+        output = complete_text_openai(prompt, model=MODEL)
+        mcq = safe_load_json(output)
+        if validate_mcq_schema(mcq, include_citation=include_citation):
+            return mcq
+        retries += 1
+        print(f"Retry {retries}/{max_retry} for schema validation...")
     
-    output = complete_text_openai(prompt, model=MODEL)
-    distractors = safe_load_json(output)    
-    return distractors
+    # Return the last attempt even if it doesn't fully match, or handle as needed.
+    return mcq
 
-def process_examples(examples_path: str, rulebook_text: str, output_path: str):
+
+def process_examples(examples_path: str, rulebook_path: str, output_path: str):
     """
-    Process each QA pair from the examples file and generate:
-      1. The multiple-choice question (using the original formatted question).
-      2. The correct answer (using the original formatted answer).
-      3. Five distractors generated from scratch.
-      4. Five distractors grounded in the rulebook text.
-      5. Optionally, five distractors grounded in online forum discussion if there are at least three posts.
-    The final combined result is printed in JSON format.
+    Process each QA pair from the examples file and generate four versions of a complete multiple-choice question:
+      - from_scratch: Using only the question and answer.
+      - from_rulebook: Using the rulebook text as context.
+      - from_forum: Using forum discussion as context (if there are at least three posts).
+      - from_rulebook_and_forum: Using both the rulebook text and forum discussion (if there are at least three posts).
+      
+    The final output for each example is a JSON object with the generated MCQs and the original URL.
     """
     processed_examples = []
     total_lines = count_lines(examples_path)
+    
+    # Load the rulebook text.
+    with open(rulebook_path, "r", encoding="utf-8") as f:
+        rulebook_text = f.read()
+    
     with open(examples_path, "r", encoding="utf-8") as f:
         for line in tqdm(f, desc="Processing questions", total=total_lines):
             example = json.loads(line)
             formatted_question = example["formatted_question"]
             formatted_answer = example["formatted_answer"]
-
-            # Use the original formatted question and answer.
-            mcq_question = f"This question is about a boardgame called Pax Renaissance. {formatted_question}"
-            correct_answer = formatted_answer
-
-            # Generate distractors from scratch.
-            distractors_scratch = generate_distractors_from_scratch(mcq_question, correct_answer)
-
-            # Generate distractors grounded in the rulebook.
-            distractors_rulebook = generate_distractors_from_rulebook(mcq_question, correct_answer, rulebook_text)
-
-            # Generate distractors based on forum discussion, if applicable.
-            distractors_forum = []
             full_content = example.get("full_content", [])
+            
+            generated_mcq = {}
+            generated_mcq["from_scratch"] = generate_mcq(formatted_question, formatted_answer)
+            generated_mcq["from_rulebook"] = generate_mcq(formatted_question, formatted_answer, rulebook_text=rulebook_text)
+            
             if len(full_content) >= 3:
-                distractors_forum = generate_distractors_from_forum(mcq_question, correct_answer, full_content)
-
-            # Combine the data into one JSON structure.
+                generated_mcq["from_forum"] = generate_mcq(formatted_question, formatted_answer, full_content=full_content)
+                generated_mcq["from_rulebook_and_forum"] = generate_mcq(formatted_question, formatted_answer, rulebook_text=rulebook_text, full_content=full_content)
+            
             final_output = {
-                "multiple_choice_question": mcq_question,
-                "correct_answer": correct_answer,
-                "distractors": {
-                    "from_scratch": distractors_scratch,
-                    "from_rulebook": distractors_rulebook
-                },
                 "url": example["url"],
+                "generated_mcq": generated_mcq,
             }
-            # Only include forum-based distractors if they were generated.
-            if distractors_forum:
-                final_output["distractors"]["from_forum"] = distractors_forum
             processed_examples.append(final_output)
-
-    with open(output_path, 'w') as writer:
+    
+    # Save line-delimited JSON output.
+    with open(output_path, 'w', encoding="utf-8") as writer:
         for example in processed_examples:
-            writer.write(json.dumps(example)+'\n')
-    with open(output_path.replace("jsonl", "json"), 'w') as writer:
+            writer.write(json.dumps(example) + '\n')
+    
+    # Save pretty JSON version.
+    with open(output_path.replace("jsonl", "json"), 'w', encoding="utf-8") as writer:
         json.dump(processed_examples, writer, indent=2)
-    print(f"saved to {output_path}")
-
-
-def load_rulebook(rulebook_path: str) -> str:
-    """
-    Load and return the rulebook text from the specified file.
-    """
-    with open(rulebook_path, "r", encoding="utf-8") as f:
-        return f.read()
+    print(f"Saved to {output_path}")
 
 def main():
-    rulebook_path = "rulebook.txt"
-    examples_path = "examples.jsonl"
-    output_path = "mcq.jsonl"
+    rulebook_path = "rules_material/pax_ren_2e/paxren_rulebook1.txt"
+    examples_path = "data/paxren_100_hot.jsonl.debug"
+    output_path = "data/paxren_100_hot_mcq.jsonl.debug"
 
-    rulebook_text = load_rulebook(rulebook_path)
-    process_examples(examples_path, rulebook_text, output_path)
+    process_examples(examples_path, rulebook_path, output_path)
 
 if __name__ == "__main__":
     main()
