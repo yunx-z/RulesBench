@@ -27,6 +27,10 @@ MODEL2PRICE = {
             "input" : 15 / 1e6,
             "output" : 60 / 1e6,
             },
+        "gemini-2.0-pro-exp-02-05" : {
+            "input" : 0,
+            "output" : 0,
+            },
 	}
 
 openai_api_key = os.getenv('OPENAI_API_KEY1')
@@ -36,6 +40,11 @@ openai_client = openai.AzureOpenAI(
 	api_key=openai_api_key,
 	api_version="2024-12-01-preview",
 	)
+
+import vertexai
+from vertexai.preview.generative_models import GenerativeModel, Part
+from google.cloud.aiplatform_v1beta1.types import SafetySetting, HarmCategory
+vertexai.init(project=os.environ["GCP_PROJECT_ID"], location="us-central1")
 
 def log_to_file(log_file, prompt, completion, model, max_tokens_to_sample, num_prompt_tokens, num_sample_tokens, thought=None):
     """ Log the prompt and completion to a file."""
@@ -97,7 +106,62 @@ def complete_text_openai(prompt, stop_sequences=[], model="gpt-4o-mini", max_tok
         log_to_file(log_file, prompt, completion, model, max_tokens_to_sample, num_prompt_tokens=usage.prompt_tokens, num_sample_tokens=usage.completion_tokens)
     return completion
 
+def complete_text_gemini(prompt, stop_sequences=[], model="gemini-pro", max_tokens_to_sample = 8000, temperature=0.5, log_file=None, **kwargs):
+    """ Call the gemini API to complete a prompt."""
+    # Load the model
+    _model = "gemini-2.0-pro-exp-02-05" if model == "gemini-exp-1206" else model
+    gemini_model = GenerativeModel(_model)
+    # Query the model
+    parameters = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens_to_sample,
+            "stop_sequences": stop_sequences,
+            **kwargs
+        }
+    safety_settings = {
+            harm_category: SafetySetting.HarmBlockThreshold(SafetySetting.HarmBlockThreshold.BLOCK_NONE)
+            for harm_category in iter(HarmCategory)
+        }
+    response = gemini_model.generate_content( [prompt], generation_config=parameters, safety_settings=safety_settings)
+    if "thinking" in model:
+        print(response)
+        thought = response.candidates[0].content.parts[0].text
+        completion = response.candidates[0].content.parts[1].text
+    else:
+        thought = None
+        completion = response.text
+    num_prompt_tokens = response.usage_metadata.prompt_token_count
+    num_sample_tokens = response.usage_metadata.candidates_token_count
+    if log_file is not None:
+        log_to_file(log_file, prompt, completion, model, max_tokens_to_sample, num_prompt_tokens, num_sample_tokens, thought=thought)
+    return completion
+
+
+MAX_RETRIES=10
+WAIT_TIME=60
+def complete_text(prompt, model, log_file=None, **kwargs):
+    """ Complete text using the specified model with appropriate API. """
+    retry = 0
+    error_msg = None
+    while retry < MAX_RETRIES:
+        retry += 1
+        try:
+            if model.startswith("gemini"):
+                completion = complete_text_gemini(prompt, log_file=log_file, model=model, **kwargs)
+            else:
+                # use OpenAI API
+                completion = complete_text_openai(prompt, log_file=log_file, model=model, **kwargs)
+            return completion
+        except Exception as e:
+            print(f"{model} attempt {retry} failed!")
+            error_msg = str(e)
+            time.sleep(WAIT_TIME)
+
+    raise ValueError(f"MAX_RETRIES exceeded: {error_msg}")
+
+
+
 if __name__ == "__main__":
     prompt = "Hello World!"
-    response = complete_text_openai(prompt, model="gpt-4o-mini")
+    response = complete_text(prompt, model="gemini-2.0-pro-exp-02-05")
     print(response)

@@ -1,0 +1,21 @@
+Can you make this question into a multiple-choice question? We are building a benchmark for LLM on boardgames rules question answering so want some hard question.
+
+Question:
+This question is about the rules of a boardgame called Pax Renaissance (2nd Edition). In the game, can pawn agents participate as attackers in religious wars, conspiracies, and peasant revolts?
+
+Answer:
+Pawn agents cannot participate as attackers in religious wars according to the official rules, but they can participate in conspiracies and peasant revolts.
+
+Output the result as a JSON dictionary with the following keys: "Question", "A", "B", "C", "D", "Correct Answer", and "Explanation".
+For example:
+{
+  "Question": "In the board game Troyes, ...?",
+  "A": "Yes – if you have the available actions, ...",
+  "B": "Yes – you can place two meeples on the same card, ...",
+  "C": "No – the rules allow only one meeple per activity card per round, ...",
+  "D": "No – you can only place a meeple on an activity card if no other meeple has been placed...",
+  "Correct Answer": "C",
+  "Explanation": "In Troyes, each activity card can only host one meeple per round..."
+}
+
+Do not include any additional text.

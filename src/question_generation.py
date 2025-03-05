@@ -3,9 +3,9 @@ import json
 import re
 from tqdm import tqdm
 
-from src.LLM import complete_text_openai
+from src.LLM import complete_text
 
-MODEL = "gpt-4o"
+MODEL = "gemini-2.0-pro-exp-02-05"
 
 def strip_html_tags(text: str) -> str:
     """
@@ -154,7 +154,7 @@ def generate_mcq(formatted_question: str, formatted_answer: str, rulebook_text: 
     
     retries = 0
     while retries < max_retry:
-        output = complete_text_openai(prompt, model=MODEL)
+        output = complete_text(prompt, model=MODEL)
         mcq = safe_load_json(output)
         if validate_mcq_schema(mcq, include_citation=include_citation):
             return mcq
@@ -177,6 +177,7 @@ def process_examples(examples_path: str, rulebook_path: str, output_path: str):
     """
     processed_examples = []
     total_lines = count_lines(examples_path)
+    print(f"Saving to {output_path}")
     
     # Load the rulebook text.
     with open(rulebook_path, "r", encoding="utf-8") as f:
@@ -203,20 +204,18 @@ def process_examples(examples_path: str, rulebook_path: str, output_path: str):
             }
             processed_examples.append(final_output)
     
-    # Save line-delimited JSON output.
-    with open(output_path, 'w', encoding="utf-8") as writer:
-        for example in processed_examples:
-            writer.write(json.dumps(example) + '\n')
+            # Save line-delimited JSON output.
+            with open(output_path, 'a', encoding="utf-8") as writer:
+                writer.write(json.dumps(final_output) + '\n')
     
     # Save pretty JSON version.
     with open(output_path.replace("jsonl", "json"), 'w', encoding="utf-8") as writer:
         json.dump(processed_examples, writer, indent=2)
-    print(f"Saved to {output_path}")
 
 def main():
     rulebook_path = "rules_material/pax_ren_2e/paxren_rulebook1.txt"
-    examples_path = "data/paxren_100_hot.jsonl.debug"
-    output_path = "data/paxren_100_hot_mcq.jsonl.debug"
+    examples_path = "data/paxren_100_hot.jsonl"
+    output_path = "data/paxren_100_hot_mcq.jsonl"
 
     process_examples(examples_path, rulebook_path, output_path)
 
