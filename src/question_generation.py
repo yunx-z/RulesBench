@@ -5,7 +5,7 @@ from tqdm import tqdm
 
 from src.LLM import complete_text
 
-MODEL = "gemini-2.0-pro-exp-02-05"
+MODEL = "gpt-4o"
 
 def strip_html_tags(text: str) -> str:
     """
@@ -15,6 +15,8 @@ def strip_html_tags(text: str) -> str:
     return re.sub(clean, '', text)
 
 def count_lines(filename):
+    if not os.path.exists(filename):
+        return 0
     with open(filename, "r", encoding="utf-8") as f:
         return sum(1 for _ in f)
 
@@ -175,16 +177,19 @@ def process_examples(examples_path: str, rulebook_path: str, output_path: str):
       
     The final output for each example is a JSON object with the generated MCQs and the original URL.
     """
-    processed_examples = []
     total_lines = count_lines(examples_path)
     print(f"Saving to {output_path}")
+    starting_line = count_lines(output_path)
+    print(f"starting from {starting_line}-th example")
     
     # Load the rulebook text.
     with open(rulebook_path, "r", encoding="utf-8") as f:
         rulebook_text = f.read()
     
     with open(examples_path, "r", encoding="utf-8") as f:
-        for line in tqdm(f, desc="Processing questions", total=total_lines):
+        for i, line in enumerate(tqdm(f, desc="Processing questions", total=total_lines, initial=starting_line)):
+            if i < starting_line:
+                continue
             example = json.loads(line)
             formatted_question = example["formatted_question"]
             formatted_answer = example["formatted_answer"]
@@ -202,20 +207,21 @@ def process_examples(examples_path: str, rulebook_path: str, output_path: str):
                 "url": example["url"],
                 "generated_mcq": generated_mcq,
             }
-            processed_examples.append(final_output)
     
             # Save line-delimited JSON output.
             with open(output_path, 'a', encoding="utf-8") as writer:
                 writer.write(json.dumps(final_output) + '\n')
     
     # Save pretty JSON version.
+    with open(output_path, 'r') as reader:
+        processed_examples = [json.loads(l) for l in reader]
     with open(output_path.replace("jsonl", "json"), 'w', encoding="utf-8") as writer:
         json.dump(processed_examples, writer, indent=2)
 
 def main():
     rulebook_path = "rules_material/pax_ren_2e/paxren_rulebook1.txt"
     examples_path = "data/paxren_100_hot.jsonl"
-    output_path = "data/paxren_100_hot_mcq.jsonl"
+    output_path = f"data/paxren_100_hot_mcq_{MODEL}.jsonl"
 
     process_examples(examples_path, rulebook_path, output_path)
 
